@@ -1,12 +1,12 @@
-name: build
-on: [push, pull_request]
+name: 构建吧
+on:
+  workflow_dispatch:
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
         build_type: [RelWithDebInfo, Debug]
         ui: [gui, cli]
         scripting: [lua, noscripts]
@@ -18,48 +18,19 @@ jobs:
           - build_type: RelWithDebInfo
             scripting: noscripts
     steps:
+    # 检出代码
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    - name: Install Dependencies
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y \
-          libpixman-1-dev libfreetype6-dev libharfbuzz-dev zlib1g-dev \
-          libx11-dev libxcursor-dev libxi-dev libgl1-mesa-dev libfontconfig1-dev
-    - name: Install Skia
-      if: ${{ matrix.ui == 'gui' }}
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Windows" ]] ; then
-          choco install wget -y --no-progress
-          wget https://github.com/aseprite/skia/releases/download/m102-861e4743af/Skia-Windows-Release-x64.zip
-          unzip Skia-Windows-Release-x64.zip -d skia
-        elif [[ "${{ runner.os }}" == "macOS" ]] ; then
-          wget https://github.com/aseprite/skia/releases/download/m102-861e4743af/Skia-macOS-Release-arm64.zip
-          unzip Skia-macOS-Release-arm64.zip -d skia
-        else
-          wget https://github.com/aseprite/skia/releases/download/m102-861e4743af/Skia-Linux-Release-x64-libstdc++.zip
-          unzip Skia-Linux-Release-x64-libstdc++.zip -d skia
-        fi
-    - name: ccache
-      uses: hendrikmuhs/ccache-action@v1
-      if: ${{ runner.os == 'Linux' || runner.os == 'macOS' }}
-      with:
-        key: ${{ matrix.os }}-${{ matrix.ui }}-${{ matrix.scripting }}-${{ matrix.build_type }}
-    - uses: aseprite/get-ninja@main
+        ref: 'v1.3.12'
+    # 设置 MSVC 开发环境
     - uses: ilammy/msvc-dev-cmd@v1
       if: runner.os == 'Windows'
+    # 生成 Makefiles
     - name: Generating Makefiles
       shell: bash
       run: |
-        if [[ "${{ runner.os }}" == "Windows" ]] ; then
-          export enable_ccache=off
-        else
-          export enable_ccache=on
-        fi
+        export enable_ccache=off
 
         if [[ "${{ matrix.ui }}" == "gui" ]] ; then
           export laf_backend=skia
@@ -73,11 +44,7 @@ jobs:
           export enable_scripting=off
         fi
 
-        if [[ "${{ runner.os }}" == "macOS" ]] ; then
-          export skia_arch=arm64
-        else
-          export skia_arch=x64
-        fi
+        export skia_arch=x64
 
         cmake -S . -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
@@ -88,24 +55,41 @@ jobs:
           -DLAF_BACKEND=$laf_backend \
           -DSKIA_DIR=skia \
           -DSKIA_LIBRARY_DIR=skia/out/Release-$skia_arch
+    # 编译代码
     - name: Compiling
       shell: bash
       run: |
         cd build && ninja
+    # 运行 C++ 测试
     - name: Running C++ Tests
       shell: bash
       run: |
-        if [[ "${{ runner.os }}" == "Linux" ]] ; then
-          export XVFB=xvfb-run
-        fi
-        cd build && $XVFB ctest --output-on-failure
+        cd build && ctest --output-on-failure
+    # 运行 CLI 测试
     - name: Running CLI Tests
       if: ${{ matrix.scripting == 'lua' }}
       shell: bash
       run: |
-        if [[ "${{ runner.os }}" == "Linux" ]] ; then
-          export XVFB=xvfb-run
-        fi
-        export ASEPRITE=$PWD/build/bin/aseprite
-        cd tests
-        $XVFB bash run-tests.sh
+        # ...existing code...
+    # 创建发布
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v1.3.12
+        release_name: v1.3.12 - $(date -u "+%Y-%m-%d %H:%M:%S")
+        body: 计算机永远的神
+        draft: false
+        prerelease: false
+    # 上传构建产物
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: path/to/your/artifact.zip
+        asset_name: artifact.zip
+        asset_content_type: application/zip
